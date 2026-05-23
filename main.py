@@ -1,83 +1,117 @@
 import asyncio
 import random
 import re
+import os
 import discord
-from discord.ext import commands
+import pokebase as pb
+from dotenv import load_dotenv
 
-TOKEN = " "
-PREFIX = " "
-CAPTCHA_CHANNEL_id = 
+load_dotenv()
 
-with open('pokemon', 'r', encoding='utf8') as file:
-    pokemon_list = file.read()
+PREFIX = os.getenv("PREFIX", "!")
+token_string = os.getenv("TOKEN", "")
 
-client = commands.Bot(command_prefix=PREFIX)
-client.remove_command('help')
-captcha = True
+TOKENS = [t.strip() for t in token_string.split(",") if t.strip()]
+
+if not TOKENS:
+    print("Erro: Nenhum token encontrado. Verifique seu arquivo .env!")
+    exit()
+
+claimed_channels = set()
+pokemon_list = []
+
+try:
+    recursos_pokemon = pb.APIResourceList('pokemon')
+    for p in recursos_pokemon:
+        nome = p['name'].lower().replace('-', ' ')
+        pokemon_list.append(nome)
+except Exception as e:
+    print(f"Erro ao baixar a lista de Pokémon: {e}")
 
 def solve(message):
     hint = []
     for i in range(15, len(message) - 1):
         if message[i] != "\\":
             hint.append(message[i])
+            
     hint_string = "".join(hint)
     hint_replaced = hint_string.replace("_", ".")
-    solution = re.findall("^" + hint_replaced + "$", pokemon_list, re.MULTILINE)
+    
+    pattern = re.compile(f"^{hint_replaced}$", re.IGNORECASE)
+    solution = [pokemon for pokemon in pokemon_list if pattern.match(pokemon)]
+    
     return solution
 
-@client.event
-async def on_ready():
-    print(f'Auto catcher foi iniciado como: {client.user.name}')
-    channel = client.get_channel(CAPTCHA_CHANNEL_id)
-    await channel.send("Iniciado com sucesso.")
+class AutoCatcher(discord.Client):
+    def __init__(self):
+        super().__init__()
+        self.target_channel_id = None
+        self.captcha = True
 
-@client.event
-async def on_message(message):
-    global captcha
-    if message.author.id == 854233015475109888 and captcha:
-        if message.content.startswith("@Pokétwo#8236 ev m shoot"):
-            resultado = message.content[len("@Pokétwo#8236 ev m shoot"):]
-            await asyncio.sleep(5)
-            await message.channel.send(f"<@716390085896962058> ev m shoot{resultado}")
+    async def on_ready(self):
+        print(f'[+] Logado na conta: {self.user.name} | Aguardando comando .ac em um canal')
 
-    if message.author.id == 716390085896962058 and captcha:
-        if message.embeds:
-            embed_title = message.embeds[0].title
-            if 'wild pokémon has appeared!' in embed_title:
-                await asyncio.sleep(1)
-                await message.channel.send('<@716390085896962058> hint')
+    async def on_message(self, message):
+        if message.content == ".ac":
+            if self.target_channel_id is None and message.channel.id not in claimed_channels:
+                self.target_channel_id = message.channel.id
+                claimed_channels.add(message.channel.id)
+                await message.channel.send(f"Conta {self.user.name} vinculada a este canal.")
+            return
 
-    if captcha:
-        content = message.content
-        if 'The pokémon is ' in content:
-            if not len(solve(content)):
-                print('Pokemon not found.')
-            else:
-                for i in solve(content):
-                    await asyncio.sleep(random.randint(3, 4))
-                    await message.channel.send(f'<@716390085896962058> c {i.lower()}')
+        if self.target_channel_id is None or message.channel.id != self.target_channel_id:
+            return
 
-        elif 'human' in content:
-            captcha = False
-            channel = client.get_channel(CAPTCHA_CHANNEL_id)
-            await channel.send(f"@everyone ``Captcha identificado! n\Após concluir, inicie o auto catcher novamente com o comando`` ``iniciar`` [**CAPTCHA**](https://verify.poketwo.net/captcha/{client.user.id})")
+        if message.author == self.user:
+            return
 
-    await client.process_commands(message)
+        if message.content == f"{PREFIX}iniciar":
+            self.captcha = True
+            await message.channel.send(f"Auto catcher da conta {self.user.name} retomado.")
+            return
 
-@client.command()
-async def iniciar(ctx):
-    global captcha
-    captcha = True
-    await ctx.send("Auto catcher iniciado com sucesso.")
+        if message.content == f"{PREFIX}parar":
+            self.captcha = False
+            await message.channel.send(f"Auto catcher da conta {self.user.name} pausado.")
+            return
 
-@client.command()
-async def parar(ctx):
-    global captcha
-    captcha = False
-    await ctx.send("Auto catcher desativado com sucesso.")
+        if message.author.id == 854233015475109888 and self.captcha:
+            if message.content.startswith("@Pokétwo#8236 ev m shoot"):
+                resultado = message.content[len("@Pokétwo#8236 ev m shoot"):]
+                await asyncio.sleep(5)
+                await message.channel.send(f"<@716390085896962058> ev m shoot{resultado}")
 
-@client.command()
-async def falar(ctx, *, text):
-    await ctx.send(text)
+        if message.author.id == 716390085896962058 and self.captcha:
+            if message.embeds:
+                embed_title = message.embeds[0].title
+                if embed_title and 'wild pokémon has appeared!' in embed_title.lower():
+                    await asyncio.sleep(1)
+                    await message.channel.send('<@716390085896962058> hint')
 
-client.run(TOKEN)
+            content = message.content
+            
+            if 'The pokémon is ' in content:
+                solucoes = solve(content)
+                if solucoes:
+                    for i in solucoes:
+                        await asyncio.sleep(random.randint(3, 4))
+                        await message.channel.send(f'<@716390085896962058> c {i.lower()}')
+
+            elif 'human' in content.lower():
+                self.captcha = False
+                await message.channel.send(f"Captcha detectado na conta {self.user.name}. O bot foi pausado.\nApós resolver, utilize o comando `{PREFIX}iniciar` para retornar.\nLink: https://verify.poketwo.net/captcha/{self.user.id}")
+
+async def main():
+    bots = [AutoCatcher() for _ in TOKENS]
+    
+    tasks = []
+    for bot, token in zip(bots, TOKENS):
+        tasks.append(bot.start(token))
+        
+    await asyncio.gather(*tasks)
+
+if __name__ == "__main__":
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        print("\nDesligando bots...")
