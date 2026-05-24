@@ -5,6 +5,7 @@ import os
 import io
 import json
 import gc
+import warnings
 import aiohttp
 import torch
 import torch.nn as nn
@@ -13,6 +14,10 @@ import pokebase as pb
 from torchvision import models, transforms
 from PIL import Image
 from dotenv import load_dotenv
+
+
+warnings.filterwarnings("ignore")
+os.environ["NNPACK_INITIALIZED"] = "1"
 
 load_dotenv()
 
@@ -42,18 +47,14 @@ except Exception as e:
 
 print("Carregando modelo de IA...")
 try:
-    # 1. Carrega os nomes primeiro
     with open('class_names.json', 'r', encoding='utf-8') as f:
         class_names = json.load(f)
     print(f"{len(class_names)} nomes carregados.")
 
-    # 2. Monta a estrutura do MobileNetV3-Small
     model = models.mobilenet_v3_small(weights=None)
     num_ftrs = model.classifier[3].in_features
-    # Ajusta a última camada para a quantidade exata de pokemon no JSON
     model.classifier[3] = nn.Linear(num_ftrs, len(class_names))
 
-    # 3. Carrega os pesos (.pth) dentro da estrutura
     state_dict = torch.load('pokemon_model_lite.pth', map_location='cpu')
     model.load_state_dict(state_dict)
     model.eval()
@@ -99,12 +100,11 @@ def _predict_sync(image_bytes):
             probabilities = torch.nn.functional.softmax(outputs[0], dim=0)
             confidence, class_idx = torch.max(probabilities, dim=0)
             
-        # O JSON usa strings como chaves ("0", "1", etc)
-        predicted_class = class_names.get(str(class_idx.item()), None)
-        
-        # Se o JSON usa inteiros como chave ou é uma lista, tentamos o fallback
-        if not predicted_class and isinstance(class_names, list):
-            predicted_class = class_names[class_idx.item()]
+        idx = class_idx.item()
+        if isinstance(class_names, list):
+            predicted_class = class_names[idx] if idx < len(class_names) else None
+        else:
+            predicted_class = class_names.get(str(idx), None)
             
         conf_value = confidence.item()
         
