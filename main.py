@@ -23,31 +23,39 @@ token_string = os.getenv("TOKEN", "")
 TOKENS = [t.strip() for t in token_string.split(",") if t.strip()]
 
 if not TOKENS:
-    print("Erro: Nenhum token encontrado. Verifique seu arquivo .env!")
+    print("Erro: Nenhum token encontrado no .env.")
     exit()
 
 claimed_channels = set()
 pokemon_list = []
 
+print("Baixando lista de pokemon...")
 try:
     recursos_pokemon = pb.APIResourceList('pokemon')
     for p in recursos_pokemon:
         nome = p['name'].lower().replace('-', ' ')
         pokemon_list.append(nome)
+    print(f"{len(pokemon_list)} pokemon baixados.")
 except Exception as e:
-    print(f"Erro ao baixar a lista de Pokémon: {e}")
+    print(f"Erro ao baixar pokemon: {e}")
 
+print("Carregando modelo de IA...")
 try:
     with open('class_names.json', 'r', encoding='utf-8') as f:
         class_names = json.load(f)
-except Exception:
+    print(f"{len(class_names)} nomes carregados.")
+except Exception as e:
+    print(f"Erro no class_names.json: {e}")
     class_names = {}
 
 try:
     model = torch.jit.load('pokemon_model_lite.pth', map_location='cpu')
     model.eval()
-except Exception:
+    print("Modelo carregado na CPU.")
+except Exception as e:
+    print(f"Falha ao carregar modelo: {e}")
     model = None
+print("-" * 50)
 
 transform = transforms.Compose([
     transforms.Resize((224, 224)),
@@ -90,7 +98,8 @@ def _predict_sync(image_bytes):
         
         return predicted_class, conf_value
 
-    except Exception:
+    except Exception as e:
+        print(f"Erro na predicao: {e}")
         gc.collect()
         return None, 0.0
 
@@ -104,14 +113,14 @@ class AutoCatcher(discord.Client):
         self.captcha = True
 
     async def on_ready(self):
-        print(f'[+] Logado na conta: {self.user.name} | Aguardando comando .ac em um canal')
+        print(f'Logado: {self.user.name} | Aguardando .ac')
 
     async def on_message(self, message):
         if message.content == ".ac":
             if self.target_channel_id is None and message.channel.id not in claimed_channels:
                 self.target_channel_id = message.channel.id
                 claimed_channels.add(message.channel.id)
-                await message.channel.send(f"Conta {self.user.name} vinculada a este canal.")
+                await message.channel.send(f"Conta {self.user.name} vinculada.")
             return
 
         if self.target_channel_id is None or message.channel.id != self.target_channel_id:
@@ -122,12 +131,12 @@ class AutoCatcher(discord.Client):
 
         if message.content == f"{PREFIX}iniciar":
             self.captcha = True
-            await message.channel.send(f"Auto catcher da conta {self.user.name} retomado.")
+            await message.channel.send(f"Auto catcher retomado: {self.user.name}.")
             return
 
         if message.content == f"{PREFIX}parar":
             self.captcha = False
-            await message.channel.send(f"Auto catcher da conta {self.user.name} pausado.")
+            await message.channel.send(f"Auto catcher pausado: {self.user.name}.")
             return
 
         if message.author.id == 854233015475109888 and self.captcha:
@@ -144,6 +153,7 @@ class AutoCatcher(discord.Client):
                     catch_success = False
 
                     if model is not None and image_url:
+                        print(f"[{self.user.name}] Spawn detectado. Usando IA...")
                         try:
                             async with aiohttp.ClientSession() as session:
                                 async with session.get(image_url) as resp:
@@ -153,11 +163,15 @@ class AutoCatcher(discord.Client):
                                         pokemon_pred, conf = await predict_pokemon_lite(image_bytes)
                                         
                                         if pokemon_pred and conf >= 0.78:
+                                            print(f"[{self.user.name}] IA: {pokemon_pred} ({conf*100:.1f}%). Capturando.")
                                             await asyncio.sleep(random.uniform(1.5, 3.0))
                                             await message.channel.send(f'<@716390085896962058> c {pokemon_pred.lower()}')
                                             catch_success = True
-                        except Exception:
-                            pass
+                                        else:
+                                            palpite = pokemon_pred if pokemon_pred else "Nenhum"
+                                            print(f"[{self.user.name}] IA insegura: {palpite} ({conf*100:.1f}%). Usando hint.")
+                        except Exception as e:
+                            print(f"[{self.user.name}] Erro na IA: {e}")
                     
                     if not catch_success:
                         await asyncio.sleep(1)
@@ -168,13 +182,17 @@ class AutoCatcher(discord.Client):
             if 'The pokémon is ' in content:
                 solucoes = solve(content)
                 if solucoes:
+                    print(f"[{self.user.name}] Hint: {solucoes}")
                     for i in solucoes:
                         await asyncio.sleep(random.randint(3, 4))
                         await message.channel.send(f'<@716390085896962058> c {i.lower()}')
+                else:
+                    print(f"[{self.user.name}] Hint nao encontrado.")
 
             elif 'human' in content.lower():
                 self.captcha = False
-                await message.channel.send(f"Captcha detectado na conta {self.user.name}. O bot foi pausado.\nApós resolver, utilize o comando `{PREFIX}iniciar` para retornar.\nLink: https://verify.poketwo.net/captcha/{self.user.id}")
+                print(f"[{self.user.name}] Captcha detectado. Pausado.")
+                await message.channel.send(f"Captcha na conta {self.user.name}. Bot pausado.\nApós resolver, use {PREFIX}iniciar.\nLink: https://verify.poketwo.net/captcha/{self.user.id}")
 
 async def main():
     bots = [AutoCatcher() for _ in TOKENS]
@@ -189,4 +207,4 @@ if __name__ == "__main__":
     try:
         asyncio.run(main())
     except KeyboardInterrupt:
-        print("\nDesligando bots...")
+        print("\nDesligando...")
