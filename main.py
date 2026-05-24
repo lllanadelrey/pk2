@@ -1,7 +1,9 @@
+import os
+os.environ["USE_NNPACK"] = "0"
+
 import asyncio
 import random
 import re
-import os
 import io
 import json
 import gc
@@ -15,9 +17,7 @@ from torchvision import models, transforms
 from PIL import Image
 from dotenv import load_dotenv
 
-
 warnings.filterwarnings("ignore")
-os.environ["NNPACK_INITIALIZED"] = "1"
 
 load_dotenv()
 
@@ -25,10 +25,11 @@ torch.set_num_threads(1)
 
 PREFIX = os.getenv("PREFIX", "!")
 token_string = os.getenv("TOKEN", "")
+VIP_TOKEN = os.getenv("VIP_TOKEN", "").strip()
 
 TOKENS = [t.strip() for t in token_string.split(",") if t.strip()]
 
-if not TOKENS:
+if not TOKENS and not VIP_TOKEN:
     print("Erro: Nenhum token encontrado no .env.")
     exit()
 
@@ -121,6 +122,57 @@ def _predict_sync(image_bytes):
 async def predict_pokemon_lite(image_bytes):
     return await asyncio.to_thread(_predict_sync, image_bytes)
 
+class VipAutoCatcher(discord.Client):
+    def __init__(self):
+        super().__init__()
+        self.target_guild_id = 716390832034414685
+        self.target_channel_ids = [903937573674700811, 926089209268293693, 926089216658649119]
+        self.captcha = True
+
+    async def on_ready(self):
+        print(f'Logado VIP: {self.user.name} | Monitorando servidor restrito automaticamente')
+
+    async def on_message(self, message):
+        if message.author == self.user:
+            return
+
+        if not message.guild or message.guild.id != self.target_guild_id:
+            return
+
+        if message.channel.id not in self.target_channel_ids:
+            return
+
+        if message.author.id == 716390085896962058 and self.captcha:
+            if message.embeds:
+                embed_title = message.embeds[0].title
+                if embed_title and 'wild pokémon has appeared!' in embed_title.lower():
+                    image_url = message.embeds[0].image.url
+
+                    if model is not None and image_url:
+                        print(f"[VIP {self.user.name}] Spawn detectado. Usando IA...")
+                        try:
+                            async with aiohttp.ClientSession() as session:
+                                async with session.get(image_url) as resp:
+                                    if resp.status == 200:
+                                        image_bytes = await resp.read()
+                                        
+                                        pokemon_pred, conf = await predict_pokemon_lite(image_bytes)
+                                        
+                                        if pokemon_pred and conf >= 0.78:
+                                            print(f"[VIP {self.user.name}] IA: {pokemon_pred} ({conf*100:.1f}%). Capturando.")
+                                            await asyncio.sleep(random.uniform(1.5, 3.0))
+                                            await message.channel.send(f'<@716390085896962058> c {pokemon_pred.lower()}')
+                                        else:
+                                            palpite = pokemon_pred if pokemon_pred else "Nenhum"
+                                            print(f"[VIP {self.user.name}] IA insegura: {palpite} ({conf*100:.1f}%). Ignorando.")
+                        except Exception as e:
+                            print(f"[VIP {self.user.name}] Erro na IA: {e}")
+
+            content = message.content
+            if 'human' in content.lower():
+                self.captcha = False
+                print(f"[VIP {self.user.name}] Captcha detectado. Silenciado.")
+
 class AutoCatcher(discord.Client):
     def __init__(self):
         super().__init__()
@@ -210,13 +262,19 @@ class AutoCatcher(discord.Client):
                 await message.channel.send(f"Captcha na conta {self.user.name}. Bot pausado.\nApós resolver, use {PREFIX}iniciar.\nLink: https://verify.poketwo.net/captcha/{self.user.id}")
 
 async def main():
-    bots = [AutoCatcher() for _ in TOKENS]
-    
     tasks = []
-    for bot, token in zip(bots, TOKENS):
-        tasks.append(bot.start(token))
-        
-    await asyncio.gather(*tasks)
+
+    if TOKENS:
+        bots = [AutoCatcher() for _ in TOKENS]
+        for bot, token in zip(bots, TOKENS):
+            tasks.append(bot.start(token))
+
+    if VIP_TOKEN:
+        vip_bot = VipAutoCatcher()
+        tasks.append(vip_bot.start(VIP_TOKEN))
+
+    if tasks:
+        await asyncio.gather(*tasks)
 
 if __name__ == "__main__":
     try:
