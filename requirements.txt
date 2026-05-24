@@ -1,3 +1,9 @@
-discord.py-self==1.9.2
+--extra-index-url https://download.pytorch.org/whl/cpu
+
+torch
+torchvision
+discord.py-self
 pokebase
 python-dotenv
+Pillow
+aiohttp
