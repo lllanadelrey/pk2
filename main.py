@@ -7,9 +7,10 @@ import json
 import gc
 import aiohttp
 import torch
+import torch.nn as nn
 import discord
 import pokebase as pb
-from torchvision import transforms
+from torchvision import models, transforms
 from PIL import Image
 from dotenv import load_dotenv
 
@@ -41,20 +42,28 @@ except Exception as e:
 
 print("Carregando modelo de IA...")
 try:
+    # 1. Carrega os nomes primeiro
     with open('class_names.json', 'r', encoding='utf-8') as f:
         class_names = json.load(f)
     print(f"{len(class_names)} nomes carregados.")
-except Exception as e:
-    print(f"Erro no class_names.json: {e}")
-    class_names = {}
 
-try:
-    model = torch.jit.load('pokemon_model_lite.pth', map_location='cpu')
+    # 2. Monta a estrutura do MobileNetV3-Small
+    model = models.mobilenet_v3_small(weights=None)
+    num_ftrs = model.classifier[3].in_features
+    # Ajusta a última camada para a quantidade exata de pokemon no JSON
+    model.classifier[3] = nn.Linear(num_ftrs, len(class_names))
+
+    # 3. Carrega os pesos (.pth) dentro da estrutura
+    state_dict = torch.load('pokemon_model_lite.pth', map_location='cpu')
+    model.load_state_dict(state_dict)
     model.eval()
-    print("Modelo carregado na CPU.")
+    print("Modelo montado e carregado na CPU com sucesso.")
+
 except Exception as e:
-    print(f"Falha ao carregar modelo: {e}")
+    print(f"Falha ao montar/carregar modelo: {e}")
     model = None
+    class_names = {}
+    
 print("-" * 50)
 
 transform = transforms.Compose([
@@ -90,7 +99,13 @@ def _predict_sync(image_bytes):
             probabilities = torch.nn.functional.softmax(outputs[0], dim=0)
             confidence, class_idx = torch.max(probabilities, dim=0)
             
+        # O JSON usa strings como chaves ("0", "1", etc)
         predicted_class = class_names.get(str(class_idx.item()), None)
+        
+        # Se o JSON usa inteiros como chave ou é uma lista, tentamos o fallback
+        if not predicted_class and isinstance(class_names, list):
+            predicted_class = class_names[class_idx.item()]
+            
         conf_value = confidence.item()
         
         del image, tensor, outputs, probabilities
