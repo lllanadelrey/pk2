@@ -2,11 +2,20 @@ import asyncio
 import random
 import re
 import os
+import io
+import json
+import gc
+import aiohttp
+import torch
 import discord
 import pokebase as pb
+from torchvision import transforms
+from PIL import Image
 from dotenv import load_dotenv
 
 load_dotenv()
+
+torch.set_num_threads(1)
 
 PREFIX = os.getenv("PREFIX", "!")
 token_string = os.getenv("TOKEN", "")
@@ -28,6 +37,24 @@ try:
 except Exception as e:
     print(f"Erro ao baixar a lista de Pokémon: {e}")
 
+try:
+    with open('class_names.json', 'r', encoding='utf-8') as f:
+        class_names = json.load(f)
+except Exception:
+    class_names = {}
+
+try:
+    model = torch.jit.load('pokemon_model_lite.pth', map_location='cpu')
+    model.eval()
+except Exception:
+    model = None
+
+transform = transforms.Compose([
+    transforms.Resize((224, 224)),
+    transforms.ToTensor(),
+    transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
+])
+
 def solve(message):
     hint = []
     for i in range(15, len(message) - 1):
@@ -41,6 +68,34 @@ def solve(message):
     solution = [pokemon for pokemon in pokemon_list if pattern.match(pokemon)]
     
     return solution
+
+def _predict_sync(image_bytes):
+    if model is None or not class_names:
+        return None, 0.0
+
+    try:
+        image = Image.open(io.BytesIO(image_bytes)).convert('RGB')
+        tensor = transform(image).unsqueeze(0)
+        
+        with torch.no_grad():
+            outputs = model(tensor)
+            probabilities = torch.nn.functional.softmax(outputs[0], dim=0)
+            confidence, class_idx = torch.max(probabilities, dim=0)
+            
+        predicted_class = class_names.get(str(class_idx.item()), None)
+        conf_value = confidence.item()
+        
+        del image, tensor, outputs, probabilities
+        gc.collect() 
+        
+        return predicted_class, conf_value
+
+    except Exception:
+        gc.collect()
+        return None, 0.0
+
+async def predict_pokemon_lite(image_bytes):
+    return await asyncio.to_thread(_predict_sync, image_bytes)
 
 class AutoCatcher(discord.Client):
     def __init__(self):
@@ -85,8 +140,28 @@ class AutoCatcher(discord.Client):
             if message.embeds:
                 embed_title = message.embeds[0].title
                 if embed_title and 'wild pokémon has appeared!' in embed_title.lower():
-                    await asyncio.sleep(1)
-                    await message.channel.send('<@716390085896962058> hint')
+                    image_url = message.embeds[0].image.url
+                    catch_success = False
+
+                    if model is not None and image_url:
+                        try:
+                            async with aiohttp.ClientSession() as session:
+                                async with session.get(image_url) as resp:
+                                    if resp.status == 200:
+                                        image_bytes = await resp.read()
+                                        
+                                        pokemon_pred, conf = await predict_pokemon_lite(image_bytes)
+                                        
+                                        if pokemon_pred and conf >= 0.78:
+                                            await asyncio.sleep(random.uniform(1.5, 3.0))
+                                            await message.channel.send(f'<@716390085896962058> c {pokemon_pred.lower()}')
+                                            catch_success = True
+                        except Exception:
+                            pass
+                    
+                    if not catch_success:
+                        await asyncio.sleep(1)
+                        await message.channel.send('<@716390085896962058> hint')
 
             content = message.content
             
